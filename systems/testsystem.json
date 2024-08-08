@@ -23,7 +23,7 @@
     }
   },
   "mem1": {
-    "GiB": 80000000000,
+    "GiB": 6,
     "GBps": 2048,
     "energyperbit":5e-12,
     "MB_efficiency": [
@@ -49,7 +49,7 @@
     {
       "bandwidth": 300,
       "efficiency": 0.65,
-      "size": 32,
+      "size": 64,
       "latency": 0.00001,
       "ops": {
         "p2p": [1.0, null],
@@ -57,7 +57,7 @@
         "all_gather": [1.5, -1],
         "all_reduce": [2.0, -1]
       },
-      "must_be_filled": true,
+      "must_be_filled": false,
       "processor_usage": 0.15
     },{
       "bandwidth": 25,

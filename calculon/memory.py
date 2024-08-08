@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
+import torch
 
 class Memory:
   """Configuration for a memory."""
@@ -22,6 +23,7 @@ class Memory:
     self._capacity = cfg['GiB'] * 1024**3
     self._bandwidth = cfg['GBps'] * 1e9
     self._efficiency = []
+    self._energyperbit = cfg['energyperbit']
     for mbytes, eff in cfg['MB_efficiency']:
       bytes = mbytes * 1e6
       assert 0 < eff <= 1.0
@@ -43,3 +45,8 @@ class Memory:
 
   def throughput(self, op_bytes):
     return self._bandwidth * self.efficiency(op_bytes)
+
+  def energy(self, op_bytes):
+    op_bytes = torch.tensor(op_bytes, dtype=torch.float32, requires_grad=True)
+    energy = self._energyperbit * op_bytes * 8
+    return energy

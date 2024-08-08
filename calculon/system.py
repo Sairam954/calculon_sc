@@ -18,6 +18,7 @@
 from .memory import *
 from .network import *
 from .processor import *
+import torch
 
 class System:
   """Configuration for a system."""
@@ -79,3 +80,20 @@ class System:
       return max(flops_time, mem_time)
     elif self.proc_mode == 'no_overlap':
       return flops_time + mem_time
+  
+  def get_matrix_compute_energy(self, flops):
+    flops = torch.tensor(flops, dtype=torch.float32, requires_grad=True)
+    return self.matrix.energy(self.datatype, flops)
+
+  def get_vector_compute_energy(self, flops):
+    flops = torch.tensor(flops, dtype=torch.float32, requires_grad=True)
+    return self.vector.energy(self.datatype, flops)
+
+  def get_mem1_energy(self, size):
+    size = torch.tensor(size, dtype=torch.float32, requires_grad=True)
+    return self.mem1.energy(size)
+
+  def get_mem2_energy(self, size):
+    size = torch.tensor(size, dtype=torch.float32, requires_grad=True)
+    return self.mem2.energy(size)
+

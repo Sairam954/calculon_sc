@@ -28,6 +28,7 @@ import sys
 if __name__ == '__main__':
   # CLI inspired from: https://github.com/ssnetsim/ssplot/
 
+
   # Creates an argparser and subparsers.
   desc = 'Calculon: Co-design for large scale parallel applications'
   ap = argparse.ArgumentParser(description=desc)
@@ -40,13 +41,17 @@ if __name__ == '__main__':
                          help='the command')
   sp.required = True
 
+  
   # Registers each command line interface.
   for cls in calculon.CommandLine.command_lines():
+    print(cls)
     cls.create_parser(sp)
-
+  
   # Parses the args and creates the logger
   args = ap.parse_args()
+  print("Starting Here :")
   logger = logging.getLogger()
+
   if args.log == '-':
     logger.addHandler(logging.StreamHandler(stream=sys.stdout))
   else:

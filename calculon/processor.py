@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
+import torch
 
 class Processor:
   """Configuration for a processing engine."""
@@ -21,9 +22,11 @@ class Processor:
   def __init__(self, cfg):
     self._datatypes = {}
     for datatype in cfg.keys():
+      # print(cfg)
       self._datatypes[datatype] = {
         'flops': cfg[datatype]['tflops'] * 1e12,
-        'efficiency': []
+        'efficiency': [],
+        'energyperflop': cfg[datatype]['energyperflop']
       }
       last = None
       for gflops, eff in cfg[datatype]['gflops_efficiency']:
@@ -46,3 +49,10 @@ class Processor:
   def throughput(self, datatype, op_flops):
     assert datatype in self._datatypes, f'Unsupported type: {datatype}'
     return self.flops(datatype) * self.efficiency(datatype, op_flops)
+
+  def energy(self, datatype, op_flops):
+    assert datatype in self._datatypes, f'Unsupported type: {datatype}'
+    energy_per_flop = self._datatypes[datatype]['energyperflop']
+    op_flops = torch.tensor(op_flops, dtype=torch.float32, requires_grad=True)
+    energy = op_flops * energy_per_flop
+    return op_flops*self._datatypes[datatype]['energyperflop']

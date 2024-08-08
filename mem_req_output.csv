@@ -1,0 +1,9 @@
+num_procs,tensor_par,pipeline_par,data_par,tensor_par_net,pipeline_par_net,data_par_net,batch_size,microbatch_size,datatype,fused_activation,attention_type,activation_recompute,pipeline_interleaving,optimizer_sharding,tensor_par_comm_type,tensor_par_overlap,seq_par_ag_redo,data_par_overlap,weight_offload,activations_offload,optimizer_offload,training,mem_req
+64,16,2,2,0,0,0,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"
+64,16,2,2,0,0,1,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"
+64,16,2,2,0,1,0,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"
+64,16,2,2,0,1,1,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"
+64,16,2,2,1,0,0,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"
+64,16,2,2,1,0,1,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"
+64,16,2,2,1,1,0,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"
+64,16,2,2,1,1,1,32,1,float16,True,multihead,none,6,False,rs_ag,none,False,False,False,False,False,False,"(10.384, 1.28)"

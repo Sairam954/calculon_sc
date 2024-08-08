@@ -25,7 +25,8 @@ import os
 import calculon
 from calculon.util import pick, arg_true_false_all
 from calculon.llm import *
-
+import pandas as pd 
+import re
 
 class OptimalExecution(calculon.CommandLine):
   NAME = 'llm-optimal-execution'
@@ -33,6 +34,7 @@ class OptimalExecution(calculon.CommandLine):
 
   @staticmethod
   def create_parser(subparser):
+    # print("Create Parser")
     sp = subparser.add_parser(
       OptimalExecution.NAME, aliases=OptimalExecution.ALIASES,
       help='run a search to find the optimal llm execution')
@@ -72,7 +74,7 @@ class OptimalExecution(calculon.CommandLine):
   @staticmethod
   def run_command(logger, args):
     assert args.top_n > 0, 'top-n must be > 0'
-
+    print("Running Optimal Execution")
     app = Llm.Application(calculon.io.read_json_file(args.application))
     syst = System(calculon.io.read_json_file(args.system))
 
@@ -95,24 +97,35 @@ class OptimalExecution(calculon.CommandLine):
                    ppint, batch_size, activation_recompute, optimizer_sharding,
                    tensor_par_comm_type, args.fused_activation, args.mbs_break,
                    not args.no_tp_overlap, not args.no_dp_overlap))
-
+    print("No of configs to check", len(params))
     # Runs parallel searches
     start_time = datetime.datetime.now()
     with mp.Pool(args.cpus) as pool:
       searches = pool.starmap(OptimalExecution.search, params)
     end_time = datetime.datetime.now()
-
+    
     # Combines parallel search result into one data structure
     best = []
     exe_count = 0
     good_exe_count = 0
     bad_exe_count = 0
-    for cbest, ec, gec, bec, tp, pp in searches:
+    analyze_mem_req = []
+    for cbest, ec, gec, bec, tp, pp, dp, mem_req in searches:
       best = OptimalExecution.update_list(best, cbest, args.top_n)
+      analyze_mem_req.append({'tp':tp,'pp':pp,'dp':dp,'mem_req':mem_req})
       exe_count += ec
       good_exe_count += gec
       bad_exe_count += bec
+    # Convert the list of JSON objects to a pandas DataFrame
+    df = pd.DataFrame(analyze_mem_req)
+    df = df.drop_duplicates()
+    # Save the DataFrame to a CSV file
+    csv_file_path = 'analyze_mem_output.csv'
+    df.to_csv(csv_file_path, index=False)
+    min_mem_req_row = df.loc[df['mem_req'].idxmin()]
 
+    print("Row with the minimum mem_req value:")
+    print(min_mem_req_row)
     logger.info(f'Total executions: {exe_count}')
     logger.info(f'Good executions: {good_exe_count}')
     logger.info(f'Bad executions: {bad_exe_count}')
@@ -163,6 +176,7 @@ class OptimalExecution(calculon.CommandLine):
 
   @staticmethod
   def get_batch_size(data_par, max_batch_size):
+    # print("Get Batch Siuze")
     if data_par > max_batch_size:
       return None
     last = data_par
@@ -183,78 +197,150 @@ class OptimalExecution(calculon.CommandLine):
     exe_count = 0
     good_exe_count = 0
     bad_exe_count = 0
+    analyze_mem_req = []
+    mem_req = 0
 
     has_mem2 = syst.mem2.capacity > 0
 
     can_redo = Llm.can_redo_ag(tensor_par_comm_type,
                                activation_recompute)
-    for seq_par_ag_redo in pick(can_redo, [True, False], [False]):
-      for data_par_overlap in pick(dp>1 and allow_dp_overlap, [True, False],
-                                   [False]):
-        for tensor_par_overlap in pick(tp>1 and allow_tp_overlap,
-                                       ['none', 'ring', 'pipe'], ['none']):
-          for weight_offload in pick(has_mem2, [True, False], [False]):
-            if activation_recompute == 'full' or not has_mem2:
-              activations_offloads = [False]
-            else:
-              activations_offloads = [True, False]
-            for activations_offload in activations_offloads:
-              for optimizer_offload in pick(has_mem2, [True, False],
-                                            [False]):
-                for fused_act in fused_acts:
-                  for microbatch_size in Llm.get_valid_microbatch_sizes(
-                      app.seq_size, tp, dp, batch_size, pp):
-                    mbs_break_good = good_exe_count
-                    for tn in pick(tp>1, range(num_nets), [0]):
-                      for pn in pick(pp>1, range(num_nets), [0]):
-                        for dn in pick(dp>1, range(num_nets), [0]):
-                          exe_count += 1
-                          exe_json = {
-                            'num_procs': num_procs,
-                            'tensor_par': tp,
-                            'pipeline_par': pp,
-                            'data_par': dp,
-                            'tensor_par_net': tn,
-                            'pipeline_par_net': pn,
-                            'data_par_net': dn,
-                            'batch_size': batch_size,
-                            'microbatch_size': microbatch_size,
-                            'datatype': datatype,
-                            'fused_activation': fused_act,
-                            'attention_type': 'multihead',
-                            'activation_recompute': activation_recompute,
-                            'pipeline_interleaving': ppint,
-                            'optimizer_sharding': optimizer_sharding,
-                            'tensor_par_comm_type': tensor_par_comm_type,
-                            'tensor_par_overlap': tensor_par_overlap,
-                            'seq_par_ag_redo': seq_par_ag_redo,
-                            'data_par_overlap': data_par_overlap,
-                            'weight_offload': weight_offload,
-                            'activations_offload': activations_offload,
-                            'optimizer_offload': optimizer_offload,
-                            'training': True
-                          }
+    
+    for microbatch_size in Llm.get_valid_microbatch_sizes(
+        app.seq_size, tp, dp, batch_size, pp):
+      mbs_break_good = good_exe_count
+      for tn in pick(tp>1, range(num_nets), [0]):
+        for pn in pick(pp>1, range(num_nets), [0]):
+          for dn in pick(dp>1, range(num_nets), [0]):
+            exe_count += 1
+          
+            exe_json = {
+              'num_procs': num_procs,
+              'tensor_par': tp,
+              'pipeline_par': pp,
+              'data_par': dp,
+              'tensor_par_net': tn,
+              'pipeline_par_net': pn,
+              'data_par_net': dn,
+              'batch_size': batch_size,
+              'microbatch_size': microbatch_size,
+              'datatype': datatype,
+              'fused_activation': True,
+              'attention_type': 'multihead',
+              'activation_recompute': "none",
+              'pipeline_interleaving': ppint,
+              'optimizer_sharding': False,
+              'tensor_par_comm_type': tensor_par_comm_type,
+              'tensor_par_overlap': "none",
+              'seq_par_ag_redo': False,
+              'data_par_overlap': False,
+              'weight_offload': False,
+              'activations_offload': False,
+              'optimizer_offload': False,
+              'training': False
+            }
+            # print("num_procs",num_procs,"tensor_par",tp,"pipeline_par",pp,"data_par",dp, "pipeline_interleaving", ppint, "microbatch_size", microbatch_size)
+            # print("Count", exe_count)
+            if not debug:
+              try:
+                logger = logging.Logger('sub')
+                model = Llm(app, logger)
+                model.compile(
+                  syst,
+                  Llm.Execution.from_json(exe_json))
+                model.run(syst)
+                stats = model.get_stats_json(layers)
+                good_exe_count += 1
+                curr = (stats['sample_rate'].detach(), exe_json, stats)
+                # print("==================================STATS====================================")
+                # print(stats)
+                best = OptimalExecution.update_list(best, curr,
+                                                    top_n)
+              except Llm.Error as ex:
+                # print("Error ======", ex)
+                logger = logging.getLogger()
+                logger.debug(f'JSON:{exe_json}\nERROR:{ex}\n')
+                bad_exe_count += 1
+               
+                mem_req =  OptimalExecution.extract_mem_req(str(ex))
+                analyze_mem_req.append(exe_json)
+      if mbs_break and good_exe_count == mbs_break_good:
+        break
 
-                          if not debug:
-                            try:
-                              logger = logging.Logger('sub')
-                              model = Llm(app, logger)
-                              model.compile(
-                                syst,
-                                Llm.Execution.from_json(exe_json))
-                              model.run(syst)
-                              stats = model.get_stats_json(layers)
-                              good_exe_count += 1
-                              curr = (stats['sample_rate'], exe_json, stats)
-                              best = OptimalExecution.update_list(best, curr,
-                                                                  top_n)
-                            except Llm.Error as ex:
-                              logger = logging.getLogger()
-                              logger.debug(f'JSON:{exe_json}\nERROR:{ex}\n')
-                              bad_exe_count += 1
-                    if mbs_break and good_exe_count == mbs_break_good:
-                      break
-    return (best, exe_count, good_exe_count, bad_exe_count, tp, pp)
+
+    # for seq_par_ag_redo in pick(can_redo, [True, False], [False]):
+    #   for data_par_overlap in pick(dp>1 and allow_dp_overlap, [True, False],
+    #                                [False]):
+    #     for tensor_par_overlap in pick(tp>1 and allow_tp_overlap,
+    #                                    ['none', 'ring', 'pipe'], ['none']):
+    #       for weight_offload in pick(has_mem2, [True, False], [False]):
+    #         if activation_recompute == 'full' or not has_mem2:
+    #           activations_offloads = [False]
+    #         else:
+    #           activations_offloads = [True, False]
+    #         for activations_offload in activations_offloads:
+    #           for optimizer_offload in pick(has_mem2, [True, False],
+    #                                         [False]):
+    #             for fused_act in fused_acts:
+    #               for microbatch_size in Llm.get_valid_microbatch_sizes(
+    #                   app.seq_size, tp, dp, batch_size, pp):
+    #                 mbs_break_good = good_exe_count
+    #                 for tn in pick(tp>1, range(num_nets), [0]):
+    #                   for pn in pick(pp>1, range(num_nets), [0]):
+    #                     for dn in pick(dp>1, range(num_nets), [0]):
+    #                       exe_count += 1
+                        
+    #                       exe_json = {
+    #                         'num_procs': num_procs,
+    #                         'tensor_par': tp,
+    #                         'pipeline_par': pp,
+    #                         'data_par': dp,
+    #                         'tensor_par_net': tn,
+    #                         'pipeline_par_net': pn,
+    #                         'data_par_net': dn,
+    #                         'batch_size': batch_size,
+    #                         'microbatch_size': microbatch_size,
+    #                         'datatype': datatype,
+    #                         'fused_activation': True,
+    #                         'attention_type': 'multihead',
+    #                         'activation_recompute': "none",
+    #                         'pipeline_interleaving': ppint,
+    #                         'optimizer_sharding': False,
+    #                         'tensor_par_comm_type': tensor_par_comm_type,
+    #                         'tensor_par_overlap': "none",
+    #                         'seq_par_ag_redo': False,
+    #                         'data_par_overlap': False,
+    #                         'weight_offload': False,
+    #                         'activations_offload': False,
+    #                         'optimizer_offload': False,
+    #                         'training': False
+    #                       }
+    #                       # print("num_procs",num_procs,"tensor_par",tp,"pipeline_par",pp,"data_par",dp, "pipeline_interleaving", ppint, "microbatch_size", microbatch_size)
+    #                       print("Count", exe_count)
+    #                       if not debug:
+    #                         try:
+    #                           logger = logging.Logger('sub')
+    #                           model = Llm(app, logger)
+    #                           model.compile(
+    #                             syst,
+    #                             Llm.Execution.from_json(exe_json))
+    #                           model.run(syst)
+    #                           stats = model.get_stats_json(layers)
+    #                           good_exe_count += 1
+    #                           curr = (stats['sample_rate'], exe_json, stats)
+    #                           best = OptimalExecution.update_list(best, curr,
+    #                                                               top_n)
+                              
+    #                         except Llm.Error as ex:
+    #                           # print("Error ======", ex)
+    #                           logger = logging.getLogger()
+    #                           logger.debug(f'JSON:{exe_json}\nERROR:{ex}\n')
+    #                           bad_exe_count += 1
+    #                 if mbs_break and good_exe_count == mbs_break_good:
+    #                   break
+    # print("Best", best)
+    print("Exe count", exe_count, "good_exe_count", good_exe_count, "bad_exe_count", bad_exe_count)
+    
+    return (best, exe_count, good_exe_count, bad_exe_count, tp, pp, dp ,mem_req)
 
   @staticmethod
   def update_list(current, candidate, quantity):
@@ -264,6 +350,21 @@ class OptimalExecution(calculon.CommandLine):
       current.extend(candidate)
     current.sort(reverse=True, key=lambda x: x[0])
     return current[:quantity]
+  @staticmethod
+  def extract_mem_req(line):
+      # Use regex to find the pattern between 'needs' and 'GiB'
+      needs_pattern = r'needs\s+([\d\.]+)\s+GiB'
+      has_pattern = r'has\s+([\d\.]+)\s+GiB'
+
+      needs_match = re.search(needs_pattern, line)
+      has_match = re.search(has_pattern, line)
+      needs_value = 0
+      if needs_match and has_match:
+          needs_value = float(needs_match.group(1))
+          has_value = float(has_match.group(1))
+          return needs_value
+      else:
+          return needs_value
 
 
 calculon.CommandLine.register(OptimalExecution)

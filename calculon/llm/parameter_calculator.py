@@ -37,10 +37,12 @@ class ParameterCalculator(calculon.CommandLine):
 
   @staticmethod
   def run_command(logger, args):
+    # print("Parameter.py ================")
     app_json = calculon.io.read_json_file(args.application)
 
     try:
       app = Llm.Application(app_json)
+
     except Llm.Error as error:
       print(f'ERROR: {error}')
       return -1

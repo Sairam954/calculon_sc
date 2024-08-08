@@ -133,7 +133,7 @@ class AllExecutions(calculon.CommandLine):
   @staticmethod
   def run_command(logger, args):
     assert args.output.endswith('.csv') or args.output.endswith('.csv.gz')
-
+    # print("Here in Execution")
     app = Llm.Application(calculon.io.read_json_file(args.application))
     syst = System(calculon.io.read_json_file(args.system))
 

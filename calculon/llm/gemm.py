@@ -19,11 +19,10 @@ from calculon import *
 from .layers import *
 
 
-class Llm:
+class Gemm:
   """
-  This implements the transformer with tensor, pipeline, and data parallelism.
-  Using it follows this pattern:
-  1. Initialize the model with certain model parameters
+
+  1. Initialize the GEMM with certain model parameters
   2. Compile it with certain optimizations and parallelization strategies
   3. Run on particular hardware system
   """
@@ -32,23 +31,17 @@ class Llm:
     """Specifies the application configuration."""
     def __init__(self, cfg):
       self.cfg = cfg
-      self.hidden = cfg['hidden']
-      self.feedforward = cfg['feedforward']
-      self.seq_size = cfg['seq_size']
-      self.attn_heads = cfg['attn_heads']
-      self.attn_size = cfg['attn_size']
-      self.num_blocks = cfg['num_blocks']
+      self.m = cfg['m']
+      self.k = cfg['k']
+      self.n = cfg['n']
+      self.num_blocks = 1
+      self.seq_size = 1
+
 
     def num_parameters(self):
       # https://cs.stanford.edu/~matei/papers/2021/sc_megatron_lm.pdf
       # Equation 2
-      p = 2 * self.hidden * self.feedforward                   # MLP weights
-      p += 4 * self.hidden * self.attn_heads * self.attn_size  # Attn weights
-      p += self.hidden + self.feedforward                      # biases MLP
-      p += 3 * self.attn_heads * self.attn_size + self.hidden  # biases Attn
-      p += 2 * 2 * self.hidden                                 # layer norm
-      p *= self.num_blocks                                     # per each block
-      p += (51200 + self.seq_size) * self.hidden               # embeddings
+      p = m*k  + k*n           #
       return p
 
   class Execution:
@@ -66,9 +59,9 @@ class Llm:
 
     @staticmethod
     def from_json(cfg):
-      assert set(cfg.keys()) == set(Llm.Execution.fields())
-      values = [cfg[field] for field in Llm.Execution.fields()]
-      return Llm.Execution(*values)
+      assert set(cfg.keys()) == set(Gemm.Execution.fields())
+      values = [cfg[field] for field in Gemm.Execution.fields()]
+      return Gemm.Execution(*values)
 
     def __init__(self, num_procs, tensor_par, pipeline_par, data_par,
                  tensor_par_net, pipeline_par_net, data_par_net,
@@ -88,6 +81,8 @@ class Llm:
       assert self.pipeline_par > 0
       self.data_par = data_par
       assert self.data_par > 0
+      # GEMM operations are generally not pipelined so assering pipeline_par =1 for GEMM
+      assert self.pipeline_par == 1
       assert self.num_procs == self.tensor_par * self.pipeline_par * \
         self.data_par, 'tensor * pipeline * data parallelism != num_procs'
       self.tensor_par_net = tensor_par_net
@@ -146,7 +141,7 @@ class Llm:
           "We only perform optimizer offloading during training"
 
     def get_json(self):
-      keys = Llm.Execution.fields()
+      keys = Gemm.Execution.fields()
       values = [
         self.num_procs, self.tensor_par, self.pipeline_par, self.data_par, self.tensor_par_net,
         self.pipeline_par_net, self.data_par_net, self.global_batch_size, self.microbatch_size,
@@ -268,8 +263,8 @@ class Llm:
     self._compiled = False
     self._executed = False
 
-    # Holds the layers in a single block
-    self._llm_block = []
+    # Holds the gemm 
+    self._gemm_block = []
 
     # A chunk is a set of blocks for microbatch before passing to the next
     # processor in the pipeline. Each chunk is modeled as a base
@@ -626,410 +621,410 @@ class Llm:
 
   def get_stats_json(self, include_layers):
     assert self._executed
-    keys = Llm.get_stats_fields()
+    keys = Gemm.get_stats_fields()
     values = self.get_stats_values()
     assert len(keys) == len(values), f'{len(keys)} {len(values)}'
     j = dict(zip(keys, values))
     if include_layers:
       j['layers'] = []
-      for layer in self._llm_block:
+      for layer in self._gemm_block:
         j['layers'].append(layer.get_stats_json())
     return j
 
-  def _build_attn_block(self):
+  def _build_gemm_block(self):
     recompute_flag = self.exe.activation_recompute == "full"
     recompute_attn_flag = self.exe.activation_recompute in \
       ["full", "attn_only"]
     recompute_ag_flag = recompute_attn_flag or self.exe.seq_par_ag_redo
 
-    assert self.app.hidden % self.exe.tensor_par == 0, (
-      f"We should split hidden={self.app.hidden} between"
-      f" {self.exe.tensor_par} TP partitions evenly")
-    assert self.app.feedforward % self.exe.tensor_par == 0, (
-      f"We should split feedforward={self.app.feedforward} between"
-      f" {self.exe.tensor_par} TP partitions evenly")
-    assert self.app.attn_heads % self.exe.tensor_par == 0, (
-      f"We should split {self.app.attn_heads} attn_heads between"
-      f" {self.exe.tensor_par} TP partitions evenly")
+    # assert self.app.hidden % self.exe.tensor_par == 0, (
+    #   f"We should split hidden={self.app.hidden} between"
+    #   f" {self.exe.tensor_par} TP partitions evenly")
+    # assert self.app.feedforward % self.exe.tensor_par == 0, (
+    #   f"We should split feedforward={self.app.feedforward} between"
+    #   f" {self.exe.tensor_par} TP partitions evenly")
+    # assert self.app.attn_heads % self.exe.tensor_par == 0, (
+    #   f"We should split {self.app.attn_heads} attn_heads between"
+    #   f" {self.exe.tensor_par} TP partitions evenly")
 
-    self._llm_block.append(Fork(
-      "AttnBlock_Fork",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      2,
-      needs_recompute=recompute_flag,
-      # We account this activation when consider Residual and LayerNorm
-      activation_stored=True))
-    self._llm_block.append(LayerNorm(
-      "AttnBlock_LayerNorm",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      self.app.hidden,
-      needs_recompute=recompute_flag,
-      # Activation is stored in Fork instead
-      activation_stored=False,
-      activation_reused=True))
-    if self.exe.tensor_par_overlap == 'none':
-      self._llm_block.append(TPComm(
-        "AttnBlock_F",
-        self.sys,
-        self._activation_size,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        # We only compute flops/mem analyzing this layers, comm analyzed later
-        # This is conservative estimate that does not consider p2p_rs_ag
-        # because we don't differentiate between edge and middle blocks here
-        tensor_par_comm_type=self.exe.tensor_par_comm_type,
-        conjugate=False,
-        in_network_reduction=self.exe.in_network_reduction,
-        needs_recomm=recompute_ag_flag))
-      self._llm_block.append(Fork(
-        "AttnBlock_Multihead_Fork",
-        self.sys,
-        self._activation_size,
-        3,
-        needs_recompute=recompute_ag_flag,
-        # With seq_par, we use activations from Comm layers to reflect that
-        # they're split, otherwise we keep full size activations
-        activation_stored=(not recompute_ag_flag)))
-      self._llm_block.append(Linear(
-        "AttnBlock_Query",
-        self.sys,
-        self._batch_seq,
-        self.app.hidden,
-        self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
-        needs_recompute=recompute_flag,
-        # Activation is stored in Fork instead,
-        activation_stored=False,
-        activation_reused=True))
-      if self.exe.attention_type == 'multihead':
-        self._llm_block.append(Linear(
-          "AttnBlock_Key",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
-          needs_recompute=recompute_flag,
-          # Activation is stored in Fork instead,
-          activation_stored=False,
-          activation_reused=True))
-        self._llm_block.append(Linear(
-          "AttnBlock_Value",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
-          needs_recompute=recompute_flag,
-          # Activation is stored in Fork instead,
-          activation_stored=False,
-          activation_reused=True))
-      elif self.exe.attention_type == 'multiquery':
-        # Multiqueri attention uses the same K, V for all "heads" resulting in
-        # smaller Wk and Wv, less matmul, faster inference
-        self._llm_block.append(Linear(
-          "AttnBlock_Key",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_size,
-          needs_recompute=recompute_flag,
-          # Activation is stored in Fork instead,
-          activation_stored=False,
-          activation_reused=True))
-        self._llm_block.append(Linear(
-          "AttnBlock_Value",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_size,
-          needs_recompute=recompute_flag,
-          # Activation is stored in Fork instead,
-          activation_stored=False,
-          activation_reused=True))
-      else:
-        raise self.Error('Wrong attention type', self.exe.attention_type)
-    else:
-      if self.exe.attention_type == 'multihead':
-        self._llm_block.append(LinearOverlapped(
-          "AttnBlock_QKV_AG",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_heads * self.app.attn_size *3,          # Q, K, V
-          self.exe.tensor_par_comm_type,
-          self.exe.tensor_par,
-          self.exe.tensor_par_net,
-          self.exe.tensor_par,
-          conjugate=False,
-          tp_overlap=self.exe.tensor_par_overlap,
-          needs_recompute=recompute_flag,
-          needs_recomm=recompute_ag_flag))
-      elif self.exe.attention_type == 'multiquery':
-        self._llm_block.append(LinearOverlapped(
-          "AttnBlock_Query_AG",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_heads * self.app.attn_size,
-          self.exe.tensor_par_comm_type,
-          self.exe.tensor_par,
-          self.exe.tensor_par_net,
-          self.exe.tensor_par,
-          conjugate=False,
-          tp_overlap=self.exe.tensor_par_overlap,
-          needs_recompute=recompute_flag,
-          needs_recomm=recompute_ag_flag))
-        self._llm_block.append(Fork(
-          "AttnBlock_KV_Fork",
-          self.sys,
-          self._activation_size,
-          2,
-          needs_recompute=recompute_ag_flag,
-          # With seq_par, we use activations from Comm layers to reflect that
-          # they're split, otherwise we keep full size activations
-          activation_stored=(not recompute_ag_flag)))
-        self._llm_block.append(Linear(
-          "AttnBlock_Key",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_size,
-          needs_recompute=recompute_flag,
-          # Activation is stored in Fork instead,
-          activation_stored=False,
-          activation_reused=True))
-        self._llm_block.append(Linear(
-          "AttnBlock_Value",
-          self.sys,
-          self._batch_seq,
-          self.app.hidden,
-          self.app.attn_size,
-          needs_recompute=recompute_flag,
-          # Activation is stored in Fork instead,
-          activation_stored=False,
-          activation_reused=True))
-      else:
-        raise self.Error('Wrong attention type', self.exe.attention_type)
-    self._llm_block.append(BatchMatMul(
-      "AttnBlock_Multihead_Key_Query",
-      self.sys,
-      self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
-      self.app.seq_size,
-      self.app.attn_size,
-      self.app.seq_size,
-      needs_recompute=recompute_attn_flag,
-      output_stored=(not recompute_attn_flag)))
-    self._llm_block.append(SoftMax(
-      "AttnBlock_Multihead_SoftMax",
-      self.sys,
-      self.app.attn_heads // self.exe.tensor_par * \
-        self.app.seq_size**2 * self.exe.microbatch_size,
-      needs_recompute=recompute_attn_flag,
-      output_stored=(not recompute_attn_flag)))
-    self._llm_block.append(DropOut(
-      "AttnBlock_Multihead_DropOut",
-      self.sys,
-      self.app.attn_heads // self.exe.tensor_par * \
-        self.app.seq_size**2 * self.exe.microbatch_size,
-      needs_recompute=recompute_attn_flag,
-      activation_stored=(not recompute_attn_flag)))
-    self._llm_block.append(BatchMatMul(
-      "AttnBlock_Multihead_Attn",
-      self.sys,
-      self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
-      self.app.seq_size,
-      self.app.seq_size,
-      self.app.attn_heads * self.app.attn_size // self.app.attn_heads,
-      needs_recompute=recompute_flag))
-    if self.exe.tensor_par_overlap == 'none':
-      self._llm_block.append(Linear(
-        "AttnBlock_MLP",
-        self.sys,
-        self._batch_seq,
-        self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
-        self.app.hidden,
-        needs_recompute=recompute_flag))
-      self._llm_block.append(TPComm(
-        "AttnBlock_G",
-        self.sys,
-        self._activation_size,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        # We only compute flops/mem analyzing this layers, comm analyzed later
-        # This is conservative estimate that does not consider p2p_rs_ag
-        # because we don't differentiate between edge and middle blocks here
-        tensor_par_comm_type=self.exe.tensor_par_comm_type,
-        conjugate=True,
-        in_network_reduction=self.exe.in_network_reduction,
-        needs_recomm=recompute_flag,
-        # We don't store input to RS/AR
-        activation_stored=False))
-    else:
-      self._llm_block.append(LinearOverlapped(
-        "AttnBlock_MLP_RS",
-        self.sys,
-        self._batch_seq,
-        self.app.attn_heads * self.app.attn_size,
-        self.app.hidden,
-        self.exe.tensor_par_comm_type,
-        self.exe.tensor_par,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        conjugate=True,
-        tp_overlap=self.exe.tensor_par_overlap,
-        needs_recompute=recompute_flag,
-        needs_recomm=recompute_flag))
-    self._llm_block.append(DropOut(
-      "AttnBlock_DropOut",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      needs_recompute=recompute_flag))
-    self._llm_block.append(ElementWise(
-      "AttnBlock_Residual",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      needs_recompute=recompute_flag,
-      # Activation is stored in Fork instead
-      activation_stored=False,
-      activation_reused=True))
+    # self._gemm_block.append(Fork(
+    #   "AttnBlock_Fork",
+    #   self.sys,
+    #   pick(self.exe._sequence_par, self._seq_par_activation_size,
+    #        self._activation_size),
+    #   2,
+    #   needs_recompute=recompute_flag,
+    #   # We account this activation when consider Residual and LayerNorm
+    #   activation_stored=True))
+    # self._llm_block.append(LayerNorm(
+    #   "AttnBlock_LayerNorm",
+    #   self.sys,
+    #   pick(self.exe._sequence_par, self._seq_par_activation_size,
+    #        self._activation_size),
+    #   self.app.hidden,
+    #   needs_recompute=recompute_flag,
+    #   # Activation is stored in Fork instead
+    #   activation_stored=False,
+    #   activation_reused=True))
+    # if self.exe.tensor_par_overlap == 'none':
+    self._gemm_block.append(TPComm(
+    "GemmBlock_F",
+    self.sys,
+    self._activation_size,
+    self.exe.tensor_par_net,
+    self.exe.tensor_par,
+    # We only compute flops/mem analyzing this layers, comm analyzed later
+    # This is conservative estimate that does not consider p2p_rs_ag
+    # because we don't differentiate between edge and middle blocks here
+    tensor_par_comm_type=self.exe.tensor_par_comm_type,
+    conjugate=False,
+    in_network_reduction=self.exe.in_network_reduction,
+    needs_recomm=recompute_ag_flag))
+    self._gemm_block.append(Fork(
+    "AttnBlock_Multihead_Fork",
+    self.sys,
+    self._activation_size,
+    3,
+    needs_recompute=recompute_ag_flag,
+    # With seq_par, we use activations from Comm layers to reflect that
+    # they're split, otherwise we keep full size activations
+    activation_stored=(not recompute_ag_flag)))
+    self._gemm_block.append(Linear(
+    "GemmBlock_matmul",
+    self.sys,
+    self.app.m,
+    self.app.k,
+    self.app.n // self.exe.tensor_par,
+    needs_recompute=recompute_flag,
+    # Activation is stored in Fork instead,
+    activation_stored=False,
+    activation_reused=True))
+    #   if self.exe.attention_type == 'multihead':
+    #     self._llm_block.append(Linear(
+    #       "AttnBlock_Key",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
+    #       needs_recompute=recompute_flag,
+    #       # Activation is stored in Fork instead,
+    #       activation_stored=False,
+    #       activation_reused=True))
+    #     self._llm_block.append(Linear(
+    #       "AttnBlock_Value",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
+    #       needs_recompute=recompute_flag,
+    #       # Activation is stored in Fork instead,
+    #       activation_stored=False,
+    #       activation_reused=True))
+    #   elif self.exe.attention_type == 'multiquery':
+    #     # Multiqueri attention uses the same K, V for all "heads" resulting in
+    #     # smaller Wk and Wv, less matmul, faster inference
+    #     self._llm_block.append(Linear(
+    #       "AttnBlock_Key",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_size,
+    #       needs_recompute=recompute_flag,
+    #       # Activation is stored in Fork instead,
+    #       activation_stored=False,
+    #       activation_reused=True))
+    #     self._llm_block.append(Linear(
+    #       "AttnBlock_Value",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_size,
+    #       needs_recompute=recompute_flag,
+    #       # Activation is stored in Fork instead,
+    #       activation_stored=False,
+    #       activation_reused=True))
+    #   else:
+    #     raise self.Error('Wrong attention type', self.exe.attention_type)
+    # else:
+    #   if self.exe.attention_type == 'multihead':
+    #     self._llm_block.append(LinearOverlapped(
+    #       "AttnBlock_QKV_AG",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_heads * self.app.attn_size *3,          # Q, K, V
+    #       self.exe.tensor_par_comm_type,
+    #       self.exe.tensor_par,
+    #       self.exe.tensor_par_net,
+    #       self.exe.tensor_par,
+    #       conjugate=False,
+    #       tp_overlap=self.exe.tensor_par_overlap,
+    #       needs_recompute=recompute_flag,
+    #       needs_recomm=recompute_ag_flag))
+    #   elif self.exe.attention_type == 'multiquery':
+    #     self._llm_block.append(LinearOverlapped(
+    #       "AttnBlock_Query_AG",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_heads * self.app.attn_size,
+    #       self.exe.tensor_par_comm_type,
+    #       self.exe.tensor_par,
+    #       self.exe.tensor_par_net,
+    #       self.exe.tensor_par,
+    #       conjugate=False,
+    #       tp_overlap=self.exe.tensor_par_overlap,
+    #       needs_recompute=recompute_flag,
+    #       needs_recomm=recompute_ag_flag))
+    #     self._llm_block.append(Fork(
+    #       "AttnBlock_KV_Fork",
+    #       self.sys,
+    #       self._activation_size,
+    #       2,
+    #       needs_recompute=recompute_ag_flag,
+    #       # With seq_par, we use activations from Comm layers to reflect that
+    #       # they're split, otherwise we keep full size activations
+    #       activation_stored=(not recompute_ag_flag)))
+    #     self._llm_block.append(Linear(
+    #       "AttnBlock_Key",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_size,
+    #       needs_recompute=recompute_flag,
+    #       # Activation is stored in Fork instead,
+    #       activation_stored=False,
+    #       activation_reused=True))
+    #     self._llm_block.append(Linear(
+    #       "AttnBlock_Value",
+    #       self.sys,
+    #       self._batch_seq,
+    #       self.app.hidden,
+    #       self.app.attn_size,
+    #       needs_recompute=recompute_flag,
+    #       # Activation is stored in Fork instead,
+    #       activation_stored=False,
+    #       activation_reused=True))
+    #   else:
+    #     raise self.Error('Wrong attention type', self.exe.attention_type)
+    # self._llm_block.append(BatchMatMul(
+    #   "AttnBlock_Multihead_Key_Query",
+    #   self.sys,
+    #   self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
+    #   self.app.seq_size,
+    #   self.app.attn_size,
+    #   self.app.seq_size,
+    #   needs_recompute=recompute_attn_flag,
+    #   output_stored=(not recompute_attn_flag)))
+    # self._llm_block.append(SoftMax(
+    #   "AttnBlock_Multihead_SoftMax",
+    #   self.sys,
+    #   self.app.attn_heads // self.exe.tensor_par * \
+    #     self.app.seq_size**2 * self.exe.microbatch_size,
+    #   needs_recompute=recompute_attn_flag,
+    #   output_stored=(not recompute_attn_flag)))
+    # self._llm_block.append(DropOut(
+    #   "AttnBlock_Multihead_DropOut",
+    #   self.sys,
+    #   self.app.attn_heads // self.exe.tensor_par * \
+    #     self.app.seq_size**2 * self.exe.microbatch_size,
+    #   needs_recompute=recompute_attn_flag,
+    #   activation_stored=(not recompute_attn_flag)))
+    # self._llm_block.append(BatchMatMul(
+    #   "AttnBlock_Multihead_Attn",
+    #   self.sys,
+    #   self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
+    #   self.app.seq_size,
+    #   self.app.seq_size,
+    #   self.app.attn_heads * self.app.attn_size // self.app.attn_heads,
+    #   needs_recompute=recompute_flag))
+    # if self.exe.tensor_par_overlap == 'none':
+    #   self._llm_block.append(Linear(
+    #     "AttnBlock_MLP",
+    #     self.sys,
+    #     self._batch_seq,
+    #     self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
+    #     self.app.hidden,
+    #     needs_recompute=recompute_flag))
+    #   self._llm_block.append(TPComm(
+    #     "AttnBlock_G",
+    #     self.sys,
+    #     self._activation_size,
+    #     self.exe.tensor_par_net,
+    #     self.exe.tensor_par,
+    #     # We only compute flops/mem analyzing this layers, comm analyzed later
+    #     # This is conservative estimate that does not consider p2p_rs_ag
+    #     # because we don't differentiate between edge and middle blocks here
+    #     tensor_par_comm_type=self.exe.tensor_par_comm_type,
+    #     conjugate=True,
+    #     in_network_reduction=self.exe.in_network_reduction,
+    #     needs_recomm=recompute_flag,
+    #     # We don't store input to RS/AR
+    #     activation_stored=False))
+    # else:
+    #   self._llm_block.append(LinearOverlapped(
+    #     "AttnBlock_MLP_RS",
+    #     self.sys,
+    #     self._batch_seq,
+    #     self.app.attn_heads * self.app.attn_size,
+    #     self.app.hidden,
+    #     self.exe.tensor_par_comm_type,
+    #     self.exe.tensor_par,
+    #     self.exe.tensor_par_net,
+    #     self.exe.tensor_par,
+    #     conjugate=True,
+    #     tp_overlap=self.exe.tensor_par_overlap,
+    #     needs_recompute=recompute_flag,
+    #     needs_recomm=recompute_flag))
+    # self._llm_block.append(DropOut(
+    #   "AttnBlock_DropOut",
+    #   self.sys,
+    #   pick(self.exe._sequence_par, self._seq_par_activation_size,
+    #        self._activation_size),
+    #   needs_recompute=recompute_flag))
+    # self._llm_block.append(ElementWise(
+    #   "AttnBlock_Residual",
+    #   self.sys,
+    #   pick(self.exe._sequence_par, self._seq_par_activation_size,
+    #        self._activation_size),
+    #   pick(self.exe._sequence_par, self._seq_par_activation_size,
+    #        self._activation_size),
+    #   needs_recompute=recompute_flag,
+    #   # Activation is stored in Fork instead
+    #   activation_stored=False,
+    #   activation_reused=True))
 
     # for layer in self._llm_block:
     #   print(layer.name)
     #   print(layer.inputs_size)
     #   print(layer.output_size)
 
-  def _build_mlp_block(self):
-    recompute_flag = self.exe.activation_recompute == "full"
-    recompute_ag_flag = recompute_flag or self.exe.seq_par_ag_redo
+#   def _build_mlp_block(self):
+#     recompute_flag = self.exe.activation_recompute == "full"
+#     recompute_ag_flag = recompute_flag or self.exe.seq_par_ag_redo
 
-    self._llm_block.append(Fork(
-      "MlpBlock_Fork",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      2,
-      needs_recompute=recompute_flag,
-      # We account this activation when consider Residual and LayerNorm
-      activation_stored=True))
-    self._llm_block.append(LayerNorm(
-      "MlpBlock_LayerNorm",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      self.app.hidden,
-      needs_recompute=recompute_flag,
-      # Activation is stored in Fork instead
-      activation_stored=False,
-      activation_reused=True))
-    if self.exe.tensor_par_overlap == 'none':
-      self._llm_block.append(TPComm(
-        "MlpBlock_F",
-        self.sys,
-        # We only do compute/mem analyzing this layers, comm analyzed later
-        # We keep extra mem buffer for comm, consider full tensor mem access
-        # to be consistent with how much data comm moves/touches
-        # This is conservative estimate that does not consider p2p_rs_ag
-        # because we don't differentiate between edge and middle blocks here
-        self._activation_size,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        tensor_par_comm_type=self.exe.tensor_par_comm_type,
-        conjugate=False,
-        in_network_reduction=self.exe.in_network_reduction,
-        needs_recomm=recompute_ag_flag))
-      self._llm_block.append(Linear(
-        "MlpBlock_Mlp1",
-        self.sys,
-        self._batch_seq,
-        self.app.hidden,
-        self.app.feedforward // self.exe.tensor_par,
-        needs_recompute=recompute_flag,
-        # With seq_par, we use activations from Comm layers to reflect that
-        # they're split, otherwise we keep full size activations
-        activation_stored=(not recompute_ag_flag)))
-    else:
-      self._llm_block.append(LinearOverlapped(
-        "MlpBlock_Mlp1_AG",
-        self.sys,
-        self._batch_seq,
-        self.app.hidden,
-        self.app.feedforward,
-        self.exe.tensor_par_comm_type,
-        self.exe.tensor_par,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        conjugate=False,
-        tp_overlap=self.exe.tensor_par_overlap,
-        needs_recompute=recompute_flag,
-        needs_recomm=recompute_ag_flag))
-    self._llm_block.append(GeLU(
-      "MlpBlock_GeLU",
-      self.sys,
-      self.app.feedforward * self._batch_seq // self.exe.tensor_par,
-      needs_recompute=recompute_flag,
-      fused=self.exe.fused_activation))
-    if self.exe.tensor_par_overlap == 'none':
-      self._llm_block.append(Linear(
-        "MlpBlock_Mlp2",
-        self.sys,
-        self._batch_seq,
-        self.app.feedforward // self.exe.tensor_par,
-        self.app.hidden,
-        needs_recompute=recompute_flag))
-      self._llm_block.append(TPComm(
-        "MlpBlock_G",
-        self.sys,
-        self._activation_size,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        # We only compute flops/mem analyzing this layers, comm analyzed later
-        # This is conservative estimate that does not consider p2p_rs_ag
-        # because we don't differentiate between edge and middle blocks here
-        tensor_par_comm_type=self.exe.tensor_par_comm_type,
-        conjugate=True,
-        in_network_reduction=self.exe.in_network_reduction,
-        needs_recomm=recompute_flag,
-        # We don't store input to RS/AR
-        activation_stored=False))
-    else:
-      self._llm_block.append(LinearOverlapped(
-        "MlpBlock_Mlp2_RS",
-        self.sys,
-        self._batch_seq,
-        self.app.feedforward,
-        self.app.hidden,
-        self.exe.tensor_par_comm_type,
-        self.exe.tensor_par,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        conjugate=True,
-        tp_overlap=self.exe.tensor_par_overlap,
-        needs_recompute=recompute_flag,
-        needs_recomm=recompute_flag))
-    self._llm_block.append(DropOut(
-      "MlpBlock_DropOut",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      needs_recompute=recompute_flag))
-    self._llm_block.append(ElementWise(
-      "MlpBlock_Residual",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      needs_recompute=recompute_flag,
-      # Activation is stored in Fork instead
-      activation_stored=False,
-      activation_reused=True))
-    # print("LLM Block :", len(self._llm_block))
+#     self._llm_block.append(Fork(
+#       "MlpBlock_Fork",
+#       self.sys,
+#       pick(self.exe._sequence_par, self._seq_par_activation_size,
+#            self._activation_size),
+#       2,
+#       needs_recompute=recompute_flag,
+#       # We account this activation when consider Residual and LayerNorm
+#       activation_stored=True))
+#     self._llm_block.append(LayerNorm(
+#       "MlpBlock_LayerNorm",
+#       self.sys,
+#       pick(self.exe._sequence_par, self._seq_par_activation_size,
+#            self._activation_size),
+#       self.app.hidden,
+#       needs_recompute=recompute_flag,
+#       # Activation is stored in Fork instead
+#       activation_stored=False,
+#       activation_reused=True))
+#     if self.exe.tensor_par_overlap == 'none':
+#       self._llm_block.append(TPComm(
+#         "MlpBlock_F",
+#         self.sys,
+#         # We only do compute/mem analyzing this layers, comm analyzed later
+#         # We keep extra mem buffer for comm, consider full tensor mem access
+#         # to be consistent with how much data comm moves/touches
+#         # This is conservative estimate that does not consider p2p_rs_ag
+#         # because we don't differentiate between edge and middle blocks here
+#         self._activation_size,
+#         self.exe.tensor_par_net,
+#         self.exe.tensor_par,
+#         tensor_par_comm_type=self.exe.tensor_par_comm_type,
+#         conjugate=False,
+#         in_network_reduction=self.exe.in_network_reduction,
+#         needs_recomm=recompute_ag_flag))
+#       self._llm_block.append(Linear(
+#         "MlpBlock_Mlp1",
+#         self.sys,
+#         self._batch_seq,
+#         self.app.hidden,
+#         self.app.feedforward // self.exe.tensor_par,
+#         needs_recompute=recompute_flag,
+#         # With seq_par, we use activations from Comm layers to reflect that
+#         # they're split, otherwise we keep full size activations
+#         activation_stored=(not recompute_ag_flag)))
+#     else:
+#       self._llm_block.append(LinearOverlapped(
+#         "MlpBlock_Mlp1_AG",
+#         self.sys,
+#         self._batch_seq,
+#         self.app.hidden,
+#         self.app.feedforward,
+#         self.exe.tensor_par_comm_type,
+#         self.exe.tensor_par,
+#         self.exe.tensor_par_net,
+#         self.exe.tensor_par,
+#         conjugate=False,
+#         tp_overlap=self.exe.tensor_par_overlap,
+#         needs_recompute=recompute_flag,
+#         needs_recomm=recompute_ag_flag))
+#     self._llm_block.append(GeLU(
+#       "MlpBlock_GeLU",
+#       self.sys,
+#       self.app.feedforward * self._batch_seq // self.exe.tensor_par,
+#       needs_recompute=recompute_flag,
+#       fused=self.exe.fused_activation))
+#     if self.exe.tensor_par_overlap == 'none':
+#       self._llm_block.append(Linear(
+#         "MlpBlock_Mlp2",
+#         self.sys,
+#         self._batch_seq,
+#         self.app.feedforward // self.exe.tensor_par,
+#         self.app.hidden,
+#         needs_recompute=recompute_flag))
+#       self._llm_block.append(TPComm(
+#         "MlpBlock_G",
+#         self.sys,
+#         self._activation_size,
+#         self.exe.tensor_par_net,
+#         self.exe.tensor_par,
+#         # We only compute flops/mem analyzing this layers, comm analyzed later
+#         # This is conservative estimate that does not consider p2p_rs_ag
+#         # because we don't differentiate between edge and middle blocks here
+#         tensor_par_comm_type=self.exe.tensor_par_comm_type,
+#         conjugate=True,
+#         in_network_reduction=self.exe.in_network_reduction,
+#         needs_recomm=recompute_flag,
+#         # We don't store input to RS/AR
+#         activation_stored=False))
+#     else:
+#       self._llm_block.append(LinearOverlapped(
+#         "MlpBlock_Mlp2_RS",
+#         self.sys,
+#         self._batch_seq,
+#         self.app.feedforward,
+#         self.app.hidden,
+#         self.exe.tensor_par_comm_type,
+#         self.exe.tensor_par,
+#         self.exe.tensor_par_net,
+#         self.exe.tensor_par,
+#         conjugate=True,
+#         tp_overlap=self.exe.tensor_par_overlap,
+#         needs_recompute=recompute_flag,
+#         needs_recomm=recompute_flag))
+#     self._llm_block.append(DropOut(
+#       "MlpBlock_DropOut",
+#       self.sys,
+#       pick(self.exe._sequence_par, self._seq_par_activation_size,
+#            self._activation_size),
+#       needs_recompute=recompute_flag))
+#     self._llm_block.append(ElementWise(
+#       "MlpBlock_Residual",
+#       self.sys,
+#       pick(self.exe._sequence_par, self._seq_par_activation_size,
+#            self._activation_size),
+#       pick(self.exe._sequence_par, self._seq_par_activation_size,
+#            self._activation_size),
+#       needs_recompute=recompute_flag,
+#       # Activation is stored in Fork instead
+#       activation_stored=False,
+#       activation_reused=True))
+#     # print("LLM Block :", len(self._llm_block))
 
   def compile(self, sys, exe):
     assert not self._compiled
@@ -1083,20 +1078,20 @@ class Llm:
     self._edgeblocks_per_chunk = 1
 
     # Build model during the compilation step
-    self._batch_seq = self.exe.microbatch_size * self.app.seq_size
+    self._batch_seq = self.exe.microbatch_size * self.app.n
     # print("microbatch_size", self.exe.microbatch_size)
     # print("Sequence Size",  self.app.seq_size)
     # print("Batch Sequence ", self._batch_seq)
-    self._activation_size = self._batch_seq * self.app.hidden
+    self._activation_size = self.app.m * self.app.n
     self._batch_seq_par = self._batch_seq // self.exe.tensor_par
     if self.exe._sequence_par or self.exe._pipeline_par_rs_ag:
       assert self._batch_seq % self.exe.tensor_par == 0, (
         f"We should split batch_seq={self._batch_seq} between"
         f" {self.exe.tensor_par} TP partitions evenly")
-    self._seq_par_activation_size = self._batch_seq_par * self.app.hidden
-    self._build_attn_block()
-    self._build_mlp_block()
-    for layer in self._llm_block:
+    self._seq_par_activation_size = self._batch_seq_par * self.app.n
+    self._build_gemm_block()
+    # self._build_mlp_block()
+    for layer in self._gemm_block:
       layer.set_bytes_per_element(self._bytes_per_element)
       if self.exe.optimizer_sharding:
         layer.shard_optimizer(self.exe.data_par)
@@ -1217,27 +1212,17 @@ class Llm:
     self._tp_bw_overlap_req = 0
 
     prev_layer_recompute = False
-    for layer in self._llm_block:
+    for layer in self._gemm_block:
       # Add flops/bytes/times per layer
       self._block_fw_flops += layer.get_fw_flops()
       ## @latency
-      ## @latency compute time 
-      fw_flops_compute_time, fw_flops_compute_energy = layer.compute_flops_time_and_energy("fw")
-      self._block_fw_flops_time += fw_flops_compute_time
-      self._block_fw_flops_energy += fw_flops_compute_energy
-      # self._block_fw_flops_time += layer.compute_flops_time("fw")
-      # self._block_fw_flops_energy += layer.compute_flops_energy("fw")
-
+      self._block_fw_flops_time += layer.compute_flops_time("fw")
+      self._block_fw_flops_energy += layer.compute_flops_energy("fw")
       self._block_fw_mem_accessed += layer.get_fw_mem_accessed()
-      ## @lateny memory time
       self._block_fw_mem_time += layer.compute_mem_time("fw")
       self._block_fw_mem_energy += layer.compute_mem_energy("fw")
       ## @latency
-      # self._block_fw_time += compute_time # Assuming @siyuan API considers the mem time as well  
-      
-      self._block_fw_time += layer.compute_processing_time("fw") # compute time + mem time or max(compute time, mem time)
-
-
+      self._block_fw_time += layer.compute_processing_time("fw")
       self._baseblock_fw_tp_size += layer.get_comm_bytes("fw",
         baseblock=True)
       self._edgeblock_fw_tp_size += layer.get_comm_bytes("fw",
@@ -1262,8 +1247,6 @@ class Llm:
           self._block_re_mem_accessed += self._block_fw_mem_accessed
           self._block_re_mem_energy += self._block_fw_mem_energy
           self._block_re_mem_time += self._block_fw_mem_time
-          # @siyaun api call 
-          # self._block_re_time += compute_time
           self._block_re_time += layer.compute_processing_time("fw")
         if layer.get_recomm_flag():
           self._baseblock_recomm_size += layer.get_comm_bytes("wgrad",
@@ -1279,21 +1262,12 @@ class Llm:
           self._edgeblock_recomm_time_exposed += layer.get_exposed_net_time(
             "wgrad", baseblock=False)
         self._block_agrad_flops += layer.get_agrad_flops()
-        # @siyuan API call
-        # self._block_agrad_flops_time += layer.compute_flops_time("agrad")
-        # self._block_agrad_flops_energy += layer.compute_flops_energy("agrad")
-
-         
-        
+        self._block_agrad_flops_time += layer.compute_flops_time("agrad")
+        self._block_agrad_flops_energy += layer.compute_flops_energy("agrad")
         self._block_agrad_mem_accessed += layer.get_agrad_mem_accessed()
         self._block_agrad_mem_time += layer.compute_mem_time("agrad")
         self._block_agrad_mem_energy += layer.compute_mem_energy("agrad")
-        # @siyuan latency api
-        block_agrad_compute_time, block_agrad_compute_energy = layer.compute_flops_time_and_energy("agrad")
-       
-        self._block_agrad_time += block_agrad_compute_time
-        # self._block_agrad_time += layer.compute_processing_time("agrad")
-
+        self._block_agrad_time += layer.compute_processing_time("agrad")
         self._baseblock_agrad_tp_size += layer.get_comm_bytes("agrad",
           baseblock=True)
         self._edgeblock_agrad_tp_size += layer.get_comm_bytes("agrad",
@@ -1311,32 +1285,18 @@ class Llm:
         self._tp_bw_overlap_req = max(self._tp_bw_overlap_req,
           layer.get_required_bandwidth("agrad", baseblock=False))
         self._block_wgrad_flops += layer.get_wgrad_flops()
-        # @siyuan api call 
-        block_wgrad_compute_time , block_wgrad_compute_energy = layer.compute_flops_time_and_energy("wgrad")
-        self._block_wgrad_flops_time += block_wgrad_compute_time
-        self._block_wgrad_flops_energy += block_wgrad_compute_energy
-
-        # self._block_wgrad_flops_time += layer.compute_flops_time("wgrad")
-        # self._block_wgrad_flops_energy += layer.compute_flops_energy("wgrad")
+        self._block_wgrad_flops_time += layer.compute_flops_time("wgrad")
+        self._block_wgrad_flops_energy += layer.compute_flops_energy("wgrad")
         self._block_wgrad_mem_accessed += layer.get_wgrad_mem_accessed()
         self._block_wgrad_mem_time += layer.compute_mem_time("wgrad")
         self._block_wgrad_mem_energy += layer.compute_mem_energy("wgrad")
-        # @siyuan api call 
-        # self._block_wgrad_time += block_wgrad_compute_time
         self._block_wgrad_time += layer.compute_processing_time("wgrad")
         self._block_optim_flops += layer.get_optim_step_flops()
-
-        # @siyuan api call 
-        block_optim_compute_time , block_optim_compute_energy = layer.compute_flops_time_and_energy("optim")
-        self._block_optim_flops_time += block_optim_compute_time
-        self._block_optim_flops_energy += block_optim_compute_energy
-        # self._block_optim_flops_time += layer.compute_flops_time("optim")
-        # self._block_optim_flops_energy += layer.compute_flops_energy("optim")
+        self._block_optim_flops_time += layer.compute_flops_time("optim")
+        self._block_optim_flops_energy += layer.compute_flops_energy("optim")
         self._block_optim_mem_accessed += layer.get_optim_step_mem_accessed()
         self._block_optim_mem_time += layer.compute_mem_time("optim")
         self._block_optim_mem_energy += layer.compute_mem_energy("optim")
-        # @siyuan api call 
-        # self._block_optim_time += block_optim_compute_time
         self._block_optim_time += layer.compute_processing_time("optim")
 
       # Accumulate space requirements per block
@@ -2267,11 +2227,11 @@ class Llm:
 
   def get_useful_flops(self):
     total_flops = sum(
-      [block.get_fw_flops() for block in self._llm_block])
+      [block.get_fw_flops() for block in self._gemm_block])
     if self.exe.training:
       total_flops += sum(
         [block.get_agrad_flops() + block.get_wgrad_flops() + \
-          block.get_optim_step_flops() for block in self._llm_block])
+          block.get_optim_step_flops() for block in self._gemm_block])
     return total_flops
 
   def get_compute_efficiency(self):
@@ -2461,10 +2421,9 @@ class Llm:
   def display_stats(self):
     stats = "=" * 80 + "\n"
     stats += "" \
-      f"blocks={self.app.num_blocks}, " \
-      f"hidden={self.app.hidden}, feedforward={self.app.feedforward}\n" \
-      f"num attn heads: {self.app.attn_heads}, " \
-      f"attn_size={self.app.attn_size}\n" \
+      f"M={self.app.m}, \n" \
+      f"K={self.app.k}, \n" \
+      f"N={self.app.n}, \n" \
       f"Run on {self.exe.num_procs} processors with:\n" \
       f"TP={self.exe.tensor_par}\n" \
       f"PP={self.exe.pipeline_par}\n" \
