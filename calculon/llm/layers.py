@@ -68,9 +68,8 @@ class Layer:
     self.bytes_per_element = 1
     self.processing_time = None
     self.net_exposed_time = None
-    self.hier_arch_leaf = Leaf(pe_arr_dim=200.0, pe_freq=30, buffer_size=20.0*1024*1024, buffer_bw=64.0, nJ_per_mac=1.0)
-    self.accelerator = Arch(buffer_size=1000*1024*1024*1024, buffer_bw=(1000000*1024*1024*1024)/self.exe.num_procs, alpha=0, mesh_bw=450, mesh_dim=9, nJ_per_Byte=1.0, child_arch=self.hier_arch_leaf)
-
+    hier_arch_leaf = Leaf(pe_arr_dim=200.0, pe_freq=30, buffer_size=20.0*1024*1024, buffer_bw=64.0, nJ_per_mac=1.0)
+    accelerator = Arch(buffer_size=1024*1024*1024*1024, buffer_bw=(3*1024*1024*1024*1024)/self.exe.num_procs, alpha=0, mesh_bw=30*1024*1024*1024*1024, mesh_dim=9, nJ_per_Byte=1.0, child_arch=hier_arch_leaf)
     # self.accelerator = Arch_leaf_specified()
 
   def get_stats_json(self):
