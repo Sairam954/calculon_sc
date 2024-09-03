@@ -17,7 +17,15 @@
 
 from calculon import *
 import torch
+import sys
+
+ 
+
 from .arch_leaf_specified import *
+from cannon_gemm.GEMM.arch import Arch
+from cannon_gemm.GEMM.arch import top_level_gemm
+from cannon_gemm.GEMM.leaf import Leaf
+
 
 class Layer:
   """
@@ -26,7 +34,7 @@ class Layer:
   memory access, or network operation.
   """
 
-  def __init__(self, name, sys, fw_flops=0, agrad_flops=0, wgrad_flops=0,
+  def __init__(self, name, sys, exe , fw_flops=0, agrad_flops=0, wgrad_flops=0,
                inputs_size=0, output_size=0, activation_space=0,
                activation_grads=0, weight_space=0, weight_grads=0,
                optim_space=0, needs_recompute=False, needs_recomm=False,
@@ -34,6 +42,7 @@ class Layer:
                output_stored=True):
     self.name = name
     self.sys = sys
+    self.exe = exe
     self.fw_flops = fw_flops
     self.agrad_flops = agrad_flops
     self.wgrad_flops = wgrad_flops
@@ -59,7 +68,10 @@ class Layer:
     self.bytes_per_element = 1
     self.processing_time = None
     self.net_exposed_time = None
-    self.accelerator = Arch_leaf_specified()
+    self.hier_arch_leaf = Leaf(pe_arr_dim=200.0, pe_freq=30, buffer_size=20.0*1024*1024, buffer_bw=64.0, nJ_per_mac=1.0)
+    self.accelerator = Arch(buffer_size=1000*1024*1024*1024, buffer_bw=(1000000*1024*1024*1024)/self.exe.num_procs, alpha=0, mesh_bw=450, mesh_dim=9, nJ_per_Byte=1.0, child_arch=self.hier_arch_leaf)
+
+    # self.accelerator = Arch_leaf_specified()
 
   def get_stats_json(self):
     return {
@@ -307,6 +319,7 @@ class Layer:
     ## Siyuan API Call @latency
     try:
         M, K, N = self.m, self.n, self.k
+        
         # @siyuan API
         if self.use_matrix_engine() and stage != "optim":
           throughput = self.sys.get_matrix_throughput(flops)
@@ -344,15 +357,18 @@ class Layer:
     ## Siyuan API Call @latency
     try:
         M, K, N = self.m, self.n, self.k
+       
         # @siyuan API
         if self.use_matrix_engine() and stage != "optim":
           # throughput = self.sys.get_matrix_throughput(flops)
-          latency, energy = self.accelerator.top_level_gemm(M,K,N)
+          latency, energy = top_level_gemm(M,K,N, self.accelerator)
+          # print("Latency", latency)
         else:
         ## Siyuan API Call @latency
           throughput = self.sys.get_vector_throughput(flops)
           latency = flops/throughput
           energy = self.compute_flops_energy(stage)
+          
     except AttributeError as e: 
       # print('Layer doesnot need matmul', layer.name)
       # print('Error', e)
@@ -364,6 +380,7 @@ class Layer:
       latency = flops/throughput
       energy = self.compute_flops_energy(stage)
       ## return latency values of throughput
+      
     return (latency,energy)
 
 
@@ -431,7 +448,7 @@ class Layer:
 # We can factor all layers peculiarities and layer-wise optimizations by
 # rewriting parent class member functions when needed
 class Linear(Layer):
-  def __init__(self, name, sys, batch_seq, c_in, c_out,
+  def __init__(self, name, sys, exe,batch_seq, c_in, c_out,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
     self.m, self.n, self.k = batch_seq, c_in, c_out
@@ -440,6 +457,7 @@ class Linear(Layer):
     
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=2*self.m*self.n*self.k,
                      agrad_flops=2*self.m*self.n*self.k,
                      wgrad_flops=2*self.m*self.n*self.k,
@@ -459,7 +477,7 @@ class Linear(Layer):
     return True
 
 class LinearOverlapped(Layer):
-  def __init__(self, name, sys, batch_seq, c_in, c_out, tensor_par_comm_type,
+  def __init__(self, name, sys, exe, batch_seq, c_in, c_out, tensor_par_comm_type,
                num_tiles, net_id, num_peers, conjugate=False,
                in_network_reduction=False, tp_overlap='pipe',
                needs_recompute=False, needs_recomm=False,
@@ -517,6 +535,7 @@ class LinearOverlapped(Layer):
 
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=2*self.m*self.n*self.k,
                      agrad_flops=2*self.m*self.n*self.k,
                      wgrad_flops=2*self.m*self.n*self.k,
@@ -704,7 +723,7 @@ class LinearOverlapped(Layer):
     return net_tile_size / flop_tile_slowed
 
 class BatchMatMul(Layer):
-  def __init__(self, name, sys, batch, size_a, contraction_size, size_b,
+  def __init__(self, name, sys, exe, batch, size_a, contraction_size, size_b,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
     self.m, self.n, self.k = size_a, contraction_size, size_b
@@ -712,6 +731,7 @@ class BatchMatMul(Layer):
     # print("M", self.m, "K", n, "N", self.k)
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=batch*2*self.m*self.n*self.k,
                      agrad_flops=batch*2*2*self.m*self.n*self.k,
                      inputs_size=batch*(self.m*self.n+self.n*self.k),
@@ -729,12 +749,13 @@ class BatchMatMul(Layer):
 # https://kratzert.github.io/2016/02/12/understanding-the-gradient-flow-through-the-batch-normalization-layer.html
 # https://cthorey.github.io./blog/2016/backpropagation/
 class LayerNorm(Layer):
-  def __init__(self, name, sys, act_size, hidden,
+  def __init__(self, name, sys, exe,act_size, hidden,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
     # print(name)
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=9*act_size,
                      agrad_flops=14*act_size,
                      wgrad_flops=7*act_size,
@@ -752,12 +773,13 @@ class LayerNorm(Layer):
 
 
 class DropOut(Layer):
-  def __init__(self, name, sys, act_size,
+  def __init__(self, name, sys, exe, act_size,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
     # print(name)
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=act_size,
                      agrad_flops=act_size,
                      inputs_size=act_size,
@@ -791,7 +813,7 @@ class DropOut(Layer):
 
 # https://mlfromscratch.com/activation-functions-explained/#/
 class GeLU(Layer):
-  def __init__(self, name, sys, act_size,
+  def __init__(self, name, sys,exe, act_size,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True,
                fused=False):
@@ -805,7 +827,7 @@ class GeLU(Layer):
     else:
       eff_act_space = act_size
       eff_act_grads = act_size
-    super().__init__(name, sys, fw_flops=8*act_size, agrad_flops=13*act_size,
+    super().__init__(name, sys, exe,fw_flops=8*act_size, agrad_flops=13*act_size,
                      inputs_size=act_size, output_size=act_size,
                      activation_space=eff_act_space,
                      activation_grads=eff_act_grads,
@@ -820,12 +842,13 @@ class GeLU(Layer):
 
 # https://automata88.medium.com/how-to-implement-the-softmax-derivative-independently-from-any-loss-function-ae6d44363a9d
 class SoftMax(Layer):
-  def __init__(self, name, sys, act_size,
+  def __init__(self, name, sys, exe, act_size,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
     # print(name)
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=5*act_size,
                      agrad_flops=8*act_size,
                      inputs_size=act_size,
@@ -843,13 +866,14 @@ class SoftMax(Layer):
 
 # https://explained.ai/matrix-calculus/#sec:1.4.2
 class ElementWise(Layer):
-  def __init__(self, name, sys, operand1, operand2,
+  def __init__(self, name, sys, exe,operand1, operand2,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
     # print(name)
     act_size = max(operand1, operand2)
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=act_size,
                      agrad_flops=(operand1+operand2),
                      inputs_size=(operand1+operand2),
@@ -864,13 +888,14 @@ class ElementWise(Layer):
 
 # Splits activation on the forward pass, sums gradients on the backward
 class Fork(Layer):
-  def __init__(self, name, sys, act_size, num_users,
+  def __init__(self, name, sys, exe,act_size, num_users,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
     # print(name)
     self.num_users = num_users
     super().__init__(name,
                      sys,
+                     exe,
                      inputs_size=act_size,
                      agrad_flops=num_users*act_size,
                      activation_space=act_size,
@@ -893,7 +918,7 @@ class Fork(Layer):
 
 class TPComm(Layer):
 
-  def __init__(self, name, sys, act_size, net_id, num_peers, tensor_par_comm_type,
+  def __init__(self, name, sys, exe, act_size, net_id, num_peers, tensor_par_comm_type,
                conjugate=False, in_network_reduction=False,
                needs_recomm=False, activation_reused=False,
                activation_stored=True, output_stored=True):
@@ -929,6 +954,7 @@ class TPComm(Layer):
         out_size = act_size
     super().__init__(name,
                      sys,
+                     exe,
                      fw_flops=fw_flops,
                      agrad_flops=bw_flops,
                      inputs_size=in_size,

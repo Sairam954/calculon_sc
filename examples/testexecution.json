@@ -1,14 +1,13 @@
-
 {
-  "num_procs": 64,
-  "tensor_par": 32,
+  "num_procs": 512,
+  "tensor_par": 8,
   "pipeline_par":1,
-  "data_par": 2,
+  "data_par": 64,
   "tensor_par_net": 0,
-  "pipeline_par_net":1,
+  "pipeline_par_net":0,
   "data_par_net": 1,
-  "batch_size": 64,
-  "microbatch_size": 1,
+  "batch_size": 256,
+  "microbatch_size": 4,
   "pipeline_interleaving": 1,
   "datatype": "float16",
   "fused_activation": true,
@@ -22,5 +21,6 @@
   "weight_offload": false,
   "activations_offload": false,
   "optimizer_offload": false,
-  "training": false
+  "training": false,
+  "gpu": false
 }

@@ -70,6 +70,8 @@ class OptimalExecution(calculon.CommandLine):
                     help='Don\'t allow TP overlap')
     sp.add_argument('--no-dp-overlap', action='store_true',
                     help='Don\'t allow DP overlap')
+    # sp.add_argument('-gpu', /action='store_true',
+    #                 help='evaluating gpu based system')
 
   @staticmethod
   def run_command(logger, args):
@@ -104,6 +106,7 @@ class OptimalExecution(calculon.CommandLine):
       searches = pool.starmap(OptimalExecution.search, params)
     end_time = datetime.datetime.now()
     
+    print(searches)
     # Combines parallel search result into one data structure
     best = []
     exe_count = 0
@@ -236,7 +239,8 @@ class OptimalExecution(calculon.CommandLine):
               'weight_offload': False,
               'activations_offload': False,
               'optimizer_offload': False,
-              'training': False
+              'training': False,
+              'gpu': False
             }
             # print("num_procs",num_procs,"tensor_par",tp,"pipeline_par",pp,"data_par",dp, "pipeline_interleaving", ppint, "microbatch_size", microbatch_size)
             # print("Count", exe_count)
@@ -250,7 +254,7 @@ class OptimalExecution(calculon.CommandLine):
                 model.run(syst)
                 stats = model.get_stats_json(layers)
                 good_exe_count += 1
-                curr = (stats['sample_rate'].detach(), exe_json, stats)
+                curr = (stats['sample_rate'], exe_json, stats)
                 # print("==================================STATS====================================")
                 # print(stats)
                 best = OptimalExecution.update_list(best, curr,

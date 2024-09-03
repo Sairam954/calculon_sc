@@ -21,6 +21,8 @@ import argparse
 import calculon
 import logging
 import sys
+import cannon_gemm
+
 
 
 

@@ -62,7 +62,7 @@ class Llm:
         'datatype', 'fused_activation', 'attention_type', 'activation_recompute',
         'pipeline_interleaving', 'optimizer_sharding', 'tensor_par_comm_type',
         'tensor_par_overlap', 'seq_par_ag_redo', 'data_par_overlap',
-        'weight_offload', 'activations_offload', 'optimizer_offload', 'training')
+        'weight_offload', 'activations_offload', 'optimizer_offload', 'training', 'gpu')
 
     @staticmethod
     def from_json(cfg):
@@ -77,9 +77,10 @@ class Llm:
                  pipeline_interleaving, optimizer_sharding,
                  tensor_par_comm_type, tensor_par_overlap,
                  seq_par_ag_redo, data_par_overlap, weight_offload,
-                 activations_offload, optimizer_offload, training):
+                 activations_offload, optimizer_offload, training, gpu):
       # print("Intialized Execution")
       self.training = training
+      self.gpu = gpu
       self.num_procs = num_procs
       assert self.num_procs > 0
       self.tensor_par = tensor_par
@@ -153,7 +154,7 @@ class Llm:
         self.datatype, self.fused_activation, self.attention_type, self.activation_recompute,
         self.pipeline_interleaving, self.optimizer_sharding, self.tensor_par_comm_type,
         self.tensor_par_overlap, self.seq_par_ag_redo, self.data_par_overlap,
-        self.weight_offload, self.activations_offload, self.optimizer_offload, self.training
+        self.weight_offload, self.activations_offload, self.optimizer_offload, self.training, self.gpu
       ]
       assert len(keys) == len(values)
       return dict(zip(keys, values))
@@ -521,16 +522,117 @@ class Llm:
 
   def get_stats_values(self):
     assert self._executed
-    return (
-      self._block_fw_flops.detach(),
-      self._block_fw_flops_time.detach(),
-      self._block_fw_mem_accessed.detach(),
-      self._block_fw_mem_time.detach(),
-      self._block_fw_time.detach(),
-      self._baseblock_fw_tp_time.detach(),
-      self._edgeblock_fw_tp_time.detach(),
-      self._baseblock_fw_tp_time_exposed.detach(),
-      self._edgeblock_fw_tp_time_exposed.detach(),
+    # return (
+    #   self._block_fw_flops,
+    #   self._block_fw_flops_time,
+    #   self._block_fw_mem_accessed,
+    #   self._block_fw_mem_time,
+    #   self._block_fw_time,
+    #   self._baseblock_fw_tp_time,
+    #   self._edgeblock_fw_tp_time,
+    #   self._baseblock_fw_tp_time_exposed,
+    #   self._edgeblock_fw_tp_time_exposed,
+    #   self._block_re_flops,
+    #   self._block_re_flops_time,
+    #   self._block_re_mem_accessed,
+    #   self._block_re_mem_time,
+    #   self._block_re_time,
+    #   self._baseblock_recomm_time,
+    #   self._edgeblock_recomm_time,
+    #   self._baseblock_recomm_time_exposed,
+    #   self._edgeblock_recomm_time_exposed,
+    #   self._block_agrad_flops,
+    #   self._block_agrad_flops_time,
+    #   self._block_agrad_mem_accessed,
+    #   self._block_agrad_mem_time,
+    #   self._block_agrad_time,
+    #   self._baseblock_agrad_tp_time,
+    #   self._edgeblock_agrad_tp_time,
+    #   self._baseblock_agrad_tp_time_exposed,
+    #   self._edgeblock_agrad_tp_time_exposed,
+    #   self._block_wgrad_flops,
+    #   self._block_wgrad_flops_time,
+    #   self._block_wgrad_mem_accessed,
+    #   self._block_wgrad_mem_time,
+    #   self._block_wgrad_time,
+    #   self._block_optim_flops,
+    #   self._block_optim_flops_time,
+    #   self._block_optim_mem_accessed,
+    #   self._block_optim_mem_time,
+    #   self._block_optim_time,
+
+    #   self._baseblock_fw_tp_size,
+    #   self._edgeblock_fw_tp_size,
+    #   self._baseblock_agrad_tp_size,
+    #   self._edgeblock_agrad_tp_size,
+    #   self._baseblock_recomm_size,
+    #   self._edgeblock_recomm_size,
+    #   self._block_fw_pp_size,
+    #   self._block_bw_pp_size,
+    #   self._block_dp_size,
+    #   self._tp_bw_overlap_req,
+    #   self._dp_bw_overlap_req_chunk,
+    #   self._dp_bw_overlap_req_tail,
+
+    #   self._block_weight_space,
+    #   self._block_act_working_space,
+    #   self._block_act_storage_space,
+    #   self._block_act_checkpoint_size,
+    #   self._block_weight_grad_space,
+    #   self._block_weight_grad_space_no_sharding,
+    #   self._block_act_grad_space,
+    #   self._block_optimizer_space,
+
+    #   self.get_weight_space_min(),
+    #   self.get_act_space_min(),
+    #   self.get_act_checkpoint_size_min(),
+    #   self.get_act_grad_space_min(),
+    #   self.get_weight_grad_space_min(),
+    #   self.get_optimizer_space_min(),
+
+    #   self.get_weight_space(),
+    #   self.get_act_space(),
+    #   self.get_act_checkpoint_size(),
+    #   self.get_act_grad_space(),
+    #   self.get_weight_grad_space(),
+    #   self.get_optimizer_space(),
+
+    #   self.get_fw_time(),
+    #   self.get_bw_time(),
+    #   self.get_optim_step_time(),
+    #   self.get_recompute_time(),
+    #   self.get_recomm_link_time(),
+    #   self.get_recomm_exposed_time(),
+    #   self.get_bubble_time(),
+    #   self.get_tp_comm_link_time(),
+    #   self.get_pp_comm_link_time(),
+    #   self.get_dp_comm_link_time(),
+    #   self.get_tp_comm_exposed_time(),
+    #   self.get_pp_comm_exposed_time(),
+    #   self.get_dp_comm_exposed_time(),
+    #   self.get_fw_offload_overhead(),
+    #   self.get_bw_offload_overhead(),
+    #   self.get_total_time(),
+    #   self.get_act_offload_bw_req(),
+    #   self.get_weight_offload_bw_req(),
+    #   self.get_optim_offload_bw_req(),
+    #   self.get_offload_mem_bw_req(),
+    #   self.get_mem_tier1_cap_req(),
+    #   self.get_mem_tier2_cap_req(),
+    #   self.get_useful_flops(),
+    #   self.get_compute_efficiency(),
+    #   self.get_system_efficiency(),
+    #   self.get_total_efficiency(),
+    #   self.get_sample_rate())
+    values = (self._block_fw_flops,
+      self._block_fw_flops_time,
+      self._block_fw_mem_accessed,
+      self._block_fw_mem_time,
+      self._block_fw_time,
+      self._baseblock_fw_tp_time,
+      self._edgeblock_fw_tp_time,
+      self._baseblock_fw_tp_time_exposed,
+      self._edgeblock_fw_tp_time_exposed,
       self._block_re_flops,
       self._block_re_flops_time,
       self._block_re_mem_accessed,
@@ -596,38 +698,43 @@ class Llm:
       self.get_weight_grad_space(),
       self.get_optimizer_space(),
 
-      self.get_fw_time().detach(),
+      self.get_fw_time(),
       self.get_bw_time(),
       self.get_optim_step_time(),
       self.get_recompute_time(),
       self.get_recomm_link_time(),
       self.get_recomm_exposed_time(),
-      self.get_bubble_time().detach(),
-      self.get_tp_comm_link_time().detach(),
+      self.get_bubble_time(),
+      self.get_tp_comm_link_time(),
       self.get_pp_comm_link_time(),
       self.get_dp_comm_link_time(),
-      self.get_tp_comm_exposed_time().detach(),
+      self.get_tp_comm_exposed_time(),
       self.get_pp_comm_exposed_time(),
       self.get_dp_comm_exposed_time(),
       self.get_fw_offload_overhead(),
       self.get_bw_offload_overhead(),
-      self.get_total_time().detach(),
-      self.get_act_offload_bw_req().detach(),
-      self.get_weight_offload_bw_req().detach(),
+      self.get_total_time(),
+      self.get_act_offload_bw_req(),
+      self.get_weight_offload_bw_req(),
       self.get_optim_offload_bw_req(),
-      self.get_offload_mem_bw_req().detach(),
+      self.get_offload_mem_bw_req(),
       self.get_mem_tier1_cap_req(),
       self.get_mem_tier2_cap_req(),
-      self.get_useful_flops().detach(),
-      self.get_compute_efficiency().detach(),
-      self.get_system_efficiency().detach(),
-      self.get_total_efficiency().detach(),
-      self.get_sample_rate().detach())
+      self.get_useful_flops(),
+      self.get_compute_efficiency(),
+      self.get_system_efficiency(),
+      self.get_total_efficiency(),
+      self.get_sample_rate())
+    
+    processed_values = tuple(value.detach().item() if isinstance(value, torch.Tensor) else value for value in values)
+
+    return processed_values
 
   def get_stats_json(self, include_layers):
     assert self._executed
     keys = Llm.get_stats_fields()
     values = self.get_stats_values()
+
     assert len(keys) == len(values), f'{len(keys)} {len(values)}'
     j = dict(zip(keys, values))
     if include_layers:
@@ -655,6 +762,7 @@ class Llm:
     self._llm_block.append(Fork(
       "AttnBlock_Fork",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       2,
@@ -664,6 +772,7 @@ class Llm:
     self._llm_block.append(LayerNorm(
       "AttnBlock_LayerNorm",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       self.app.hidden,
@@ -675,6 +784,7 @@ class Llm:
       self._llm_block.append(TPComm(
         "AttnBlock_F",
         self.sys,
+        self.exe,
         self._activation_size,
         self.exe.tensor_par_net,
         self.exe.tensor_par,
@@ -688,6 +798,7 @@ class Llm:
       self._llm_block.append(Fork(
         "AttnBlock_Multihead_Fork",
         self.sys,
+        self.exe,
         self._activation_size,
         3,
         needs_recompute=recompute_ag_flag,
@@ -697,6 +808,7 @@ class Llm:
       self._llm_block.append(Linear(
         "AttnBlock_Query",
         self.sys,
+        self.exe,
         self._batch_seq,
         self.app.hidden,
         self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
@@ -708,6 +820,7 @@ class Llm:
         self._llm_block.append(Linear(
           "AttnBlock_Key",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
@@ -718,6 +831,7 @@ class Llm:
         self._llm_block.append(Linear(
           "AttnBlock_Value",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
@@ -731,6 +845,7 @@ class Llm:
         self._llm_block.append(Linear(
           "AttnBlock_Key",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_size,
@@ -741,6 +856,7 @@ class Llm:
         self._llm_block.append(Linear(
           "AttnBlock_Value",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_size,
@@ -755,6 +871,7 @@ class Llm:
         self._llm_block.append(LinearOverlapped(
           "AttnBlock_QKV_AG",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_heads * self.app.attn_size *3,          # Q, K, V
@@ -770,6 +887,7 @@ class Llm:
         self._llm_block.append(LinearOverlapped(
           "AttnBlock_Query_AG",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_heads * self.app.attn_size,
@@ -784,6 +902,7 @@ class Llm:
         self._llm_block.append(Fork(
           "AttnBlock_KV_Fork",
           self.sys,
+          self.exe,
           self._activation_size,
           2,
           needs_recompute=recompute_ag_flag,
@@ -793,6 +912,7 @@ class Llm:
         self._llm_block.append(Linear(
           "AttnBlock_Key",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_size,
@@ -803,6 +923,7 @@ class Llm:
         self._llm_block.append(Linear(
           "AttnBlock_Value",
           self.sys,
+          self.exe,
           self._batch_seq,
           self.app.hidden,
           self.app.attn_size,
@@ -815,6 +936,7 @@ class Llm:
     self._llm_block.append(BatchMatMul(
       "AttnBlock_Multihead_Key_Query",
       self.sys,
+      self.exe,
       self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
       self.app.seq_size,
       self.app.attn_size,
@@ -824,6 +946,7 @@ class Llm:
     self._llm_block.append(SoftMax(
       "AttnBlock_Multihead_SoftMax",
       self.sys,
+      self.exe,
       self.app.attn_heads // self.exe.tensor_par * \
         self.app.seq_size**2 * self.exe.microbatch_size,
       needs_recompute=recompute_attn_flag,
@@ -831,6 +954,7 @@ class Llm:
     self._llm_block.append(DropOut(
       "AttnBlock_Multihead_DropOut",
       self.sys,
+      self.exe,
       self.app.attn_heads // self.exe.tensor_par * \
         self.app.seq_size**2 * self.exe.microbatch_size,
       needs_recompute=recompute_attn_flag,
@@ -838,6 +962,7 @@ class Llm:
     self._llm_block.append(BatchMatMul(
       "AttnBlock_Multihead_Attn",
       self.sys,
+      self.exe,
       self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
       self.app.seq_size,
       self.app.seq_size,
@@ -847,6 +972,7 @@ class Llm:
       self._llm_block.append(Linear(
         "AttnBlock_MLP",
         self.sys,
+        self.exe,
         self._batch_seq,
         self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
         self.app.hidden,
@@ -854,6 +980,7 @@ class Llm:
       self._llm_block.append(TPComm(
         "AttnBlock_G",
         self.sys,
+        self.exe,
         self._activation_size,
         self.exe.tensor_par_net,
         self.exe.tensor_par,
@@ -870,6 +997,7 @@ class Llm:
       self._llm_block.append(LinearOverlapped(
         "AttnBlock_MLP_RS",
         self.sys,
+        self.exe,
         self._batch_seq,
         self.app.attn_heads * self.app.attn_size,
         self.app.hidden,
@@ -884,12 +1012,14 @@ class Llm:
     self._llm_block.append(DropOut(
       "AttnBlock_DropOut",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       needs_recompute=recompute_flag))
     self._llm_block.append(ElementWise(
       "AttnBlock_Residual",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       pick(self.exe._sequence_par, self._seq_par_activation_size,
@@ -911,6 +1041,7 @@ class Llm:
     self._llm_block.append(Fork(
       "MlpBlock_Fork",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       2,
@@ -920,6 +1051,7 @@ class Llm:
     self._llm_block.append(LayerNorm(
       "MlpBlock_LayerNorm",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       self.app.hidden,
@@ -931,6 +1063,7 @@ class Llm:
       self._llm_block.append(TPComm(
         "MlpBlock_F",
         self.sys,
+        self.exe,
         # We only do compute/mem analyzing this layers, comm analyzed later
         # We keep extra mem buffer for comm, consider full tensor mem access
         # to be consistent with how much data comm moves/touches
@@ -946,6 +1079,7 @@ class Llm:
       self._llm_block.append(Linear(
         "MlpBlock_Mlp1",
         self.sys,
+        self.exe,
         self._batch_seq,
         self.app.hidden,
         self.app.feedforward // self.exe.tensor_par,
@@ -957,6 +1091,7 @@ class Llm:
       self._llm_block.append(LinearOverlapped(
         "MlpBlock_Mlp1_AG",
         self.sys,
+        self.exe,
         self._batch_seq,
         self.app.hidden,
         self.app.feedforward,
@@ -971,6 +1106,7 @@ class Llm:
     self._llm_block.append(GeLU(
       "MlpBlock_GeLU",
       self.sys,
+      self.exe,
       self.app.feedforward * self._batch_seq // self.exe.tensor_par,
       needs_recompute=recompute_flag,
       fused=self.exe.fused_activation))
@@ -978,6 +1114,7 @@ class Llm:
       self._llm_block.append(Linear(
         "MlpBlock_Mlp2",
         self.sys,
+        self.exe,
         self._batch_seq,
         self.app.feedforward // self.exe.tensor_par,
         self.app.hidden,
@@ -985,6 +1122,7 @@ class Llm:
       self._llm_block.append(TPComm(
         "MlpBlock_G",
         self.sys,
+        self.exe,
         self._activation_size,
         self.exe.tensor_par_net,
         self.exe.tensor_par,
@@ -1001,6 +1139,7 @@ class Llm:
       self._llm_block.append(LinearOverlapped(
         "MlpBlock_Mlp2_RS",
         self.sys,
+        self.exe,
         self._batch_seq,
         self.app.feedforward,
         self.app.hidden,
@@ -1015,12 +1154,14 @@ class Llm:
     self._llm_block.append(DropOut(
       "MlpBlock_DropOut",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       needs_recompute=recompute_flag))
     self._llm_block.append(ElementWise(
       "MlpBlock_Residual",
       self.sys,
+      self.exe,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       pick(self.exe._sequence_par, self._seq_par_activation_size,
@@ -1222,21 +1363,23 @@ class Llm:
       self._block_fw_flops += layer.get_fw_flops()
       ## @latency
       ## @latency compute time 
-      fw_flops_compute_time, fw_flops_compute_energy = layer.compute_flops_time_and_energy("fw")
-      self._block_fw_flops_time += fw_flops_compute_time
-      self._block_fw_flops_energy += fw_flops_compute_energy
-      # self._block_fw_flops_time += layer.compute_flops_time("fw")
-      # self._block_fw_flops_energy += layer.compute_flops_energy("fw")
+      if self.exe.gpu == False:
+        fw_flops_compute_time, fw_flops_compute_energy = layer.compute_flops_time_and_energy("fw")
+        self._block_fw_flops_time += fw_flops_compute_time
+        self._block_fw_flops_energy += fw_flops_compute_energy
+      else:
+        self._block_fw_flops_time += layer.compute_flops_time("fw")
+        self._block_fw_flops_energy += layer.compute_flops_energy("fw")
 
       self._block_fw_mem_accessed += layer.get_fw_mem_accessed()
       ## @lateny memory time
       self._block_fw_mem_time += layer.compute_mem_time("fw")
       self._block_fw_mem_energy += layer.compute_mem_energy("fw")
       ## @latency
-      # self._block_fw_time += compute_time # Assuming @siyuan API considers the mem time as well  
-      
-      self._block_fw_time += layer.compute_processing_time("fw") # compute time + mem time or max(compute time, mem time)
-
+      if self.exe.gpu == False:
+        self._block_fw_time += fw_flops_compute_time
+      else:
+        self._block_fw_time += layer.compute_processing_time("fw") # compute time + mem time or max(compute time, mem time)
 
       self._baseblock_fw_tp_size += layer.get_comm_bytes("fw",
         baseblock=True)
@@ -1289,10 +1432,11 @@ class Llm:
         self._block_agrad_mem_time += layer.compute_mem_time("agrad")
         self._block_agrad_mem_energy += layer.compute_mem_energy("agrad")
         # @siyuan latency api
-        block_agrad_compute_time, block_agrad_compute_energy = layer.compute_flops_time_and_energy("agrad")
-       
-        self._block_agrad_time += block_agrad_compute_time
-        # self._block_agrad_time += layer.compute_processing_time("agrad")
+        if self.exe.gpu == False:
+          block_agrad_compute_time, block_agrad_compute_energy = layer.compute_flops_time_and_energy("agrad")
+          self._block_agrad_time += block_agrad_compute_time
+        else:
+          self._block_agrad_time += layer.compute_processing_time("agrad")
 
         self._baseblock_agrad_tp_size += layer.get_comm_bytes("agrad",
           baseblock=True)
@@ -1312,12 +1456,13 @@ class Llm:
           layer.get_required_bandwidth("agrad", baseblock=False))
         self._block_wgrad_flops += layer.get_wgrad_flops()
         # @siyuan api call 
-        block_wgrad_compute_time , block_wgrad_compute_energy = layer.compute_flops_time_and_energy("wgrad")
-        self._block_wgrad_flops_time += block_wgrad_compute_time
-        self._block_wgrad_flops_energy += block_wgrad_compute_energy
-
-        # self._block_wgrad_flops_time += layer.compute_flops_time("wgrad")
-        # self._block_wgrad_flops_energy += layer.compute_flops_energy("wgrad")
+        if self.exe.gpu == False:
+          block_wgrad_compute_time , block_wgrad_compute_energy = layer.compute_flops_time_and_energy("wgrad")
+          self._block_wgrad_flops_time += block_wgrad_compute_time
+          self._block_wgrad_flops_energy += block_wgrad_compute_energy
+        else:
+          self._block_wgrad_flops_time += layer.compute_flops_time("wgrad")
+          self._block_wgrad_flops_energy += layer.compute_flops_energy("wgrad")
         self._block_wgrad_mem_accessed += layer.get_wgrad_mem_accessed()
         self._block_wgrad_mem_time += layer.compute_mem_time("wgrad")
         self._block_wgrad_mem_energy += layer.compute_mem_energy("wgrad")
@@ -1327,11 +1472,13 @@ class Llm:
         self._block_optim_flops += layer.get_optim_step_flops()
 
         # @siyuan api call 
-        block_optim_compute_time , block_optim_compute_energy = layer.compute_flops_time_and_energy("optim")
-        self._block_optim_flops_time += block_optim_compute_time
-        self._block_optim_flops_energy += block_optim_compute_energy
-        # self._block_optim_flops_time += layer.compute_flops_time("optim")
-        # self._block_optim_flops_energy += layer.compute_flops_energy("optim")
+        if self.exe.gpu == False:
+          block_optim_compute_time , block_optim_compute_energy = layer.compute_flops_time_and_energy("optim")
+          self._block_optim_flops_time += block_optim_compute_time
+          self._block_optim_flops_energy += block_optim_compute_energy
+        else:
+          self._block_optim_flops_time += layer.compute_flops_time("optim")
+          self._block_optim_flops_energy += layer.compute_flops_energy("optim")
         self._block_optim_mem_accessed += layer.get_optim_step_mem_accessed()
         self._block_optim_mem_time += layer.compute_mem_time("optim")
         self._block_optim_mem_energy += layer.compute_mem_energy("optim")
@@ -1529,6 +1676,7 @@ class Llm:
     self._fw_mem_accessed = mult * self._block_fw_mem_accessed
     self._fw_mem_time = mult * self._block_fw_mem_time
     self._fw_time = mult * self._block_fw_time
+    # print('FW TIME Comjpute batch stat===========', self._fw_time) 
     self._re_flops = mult * self._block_re_flops
     self._re_flops_time = mult * self._block_re_flops_time
     self._re_mem_accessed = mult * self._block_re_mem_accessed
@@ -2151,7 +2299,8 @@ class Llm:
       return torch.tensor(self._block_optim_mem_energy, dtype=torch.float32, requires_grad=True)
 
   def get_fw_time(self):
-    return self._fw_time
+    # print("FW TIME===========", self._blocks_per_proc * self.exe._num_microbatches * self._block_fw_time)
+    return self._blocks_per_proc * self.exe._num_microbatches * self._block_fw_time
 
   def get_fw_offload_time(self):
     return self.sys.compute_offload_time(self._get_fw_offload_size())
@@ -2234,16 +2383,30 @@ class Llm:
 
   def get_total_time(self):
     time = self.get_fw_time()
+    # print('mul ', self._blocks_per_proc * self.exe._num_microbatches)
+    # print('Get Block FW Time ****************', self._block_fw_time)
+    # print('Get FW Time ****************', self._fw_time)
+    # print('Get FW Time ', self.get_fw_time())
     time += self.get_bw_time()
+    # print('Get BW Time', self.get_bw_time())
     time += self.get_optim_step_time()
+    # print('Get Optim Step Time', self.get_optim_step_time())
     time += self.get_fw_offload_overhead()
+    # print('Get FW offload overlead', self.get_fw_offload_overhead())
     time += self.get_bw_offload_overhead()
+    # print('Get BW offload overhead', self.get_bw_offload_overhead())
     time += self.get_recompute_time()
+    # print('Get Recompute time', self.get_recompute_time())
     time += self.get_recomm_exposed_time()
+    # print('Get Recomm Exposed Time', self.get_recomm_exposed_time())
     time += self.get_bubble_time()
+    # print('Get Bubble Time', self.get_bubble_time())
     time += self.get_tp_comm_exposed_time()
+    # print('Get TP Comm Exposed Time', self.get_tp_comm_exposed_time())
     time += self.get_pp_comm_exposed_time()
+    # print('Get PP Comm Exposed Time', self.get_pp_comm_exposed_time())
     time += self.get_dp_comm_exposed_time()
+    # print('Get DP Comm Exposed Time', self.get_dp_comm_exposed_time())
     return time
 
   def get_total_compute_energy(self):
@@ -2456,6 +2619,7 @@ class Llm:
       return self._get_fw_offload_size() / fw_offload_time
 
   def get_sample_rate(self):
+    # print('get total time', self.get_total_time())
     return self.exe.global_batch_size / self.get_total_time()
 
   def display_stats(self):
@@ -2493,6 +2657,9 @@ class Llm:
       f"Batch PP comm time on link: {self.get_pp_comm_link_time():.4f};\n" \
       f"Batch DP comm time on link: {self.get_dp_comm_link_time():.4f};\n" \
       f"Batch total time: {self.get_total_time():.4f};\n" \
+      f"Batch total time: {self.get_total_time():.4f};\n" \
+      f"Batch total time: {self.get_total_time():.4f};\n" \
+      f"Batch total time: {self.get_total_time():.4f};\n" \
       f"Activation offload required BW: " \
       f"{human_format(self.get_act_offload_bw_req(), 'bandwidth')};\n" \
       f"Weight offload required BW: " \
@@ -2509,7 +2676,6 @@ class Llm:
       f"{human_format(self.get_offload_mem_bw_req(), 'bandwidth')};\n" \
       f"Compute Energy (J): {self.get_total_compute_energy():.4f};\n" \
       f"Memory Energy (J): {self.get_total_mem_energy():.4f};\n" \
-      f"Batch total time: {self.get_total_time():.4f};\n" \
       f"Compute efficiency: {self.get_compute_efficiency()*100:.2f}%;\n" \
       f"System efficiency: {self.get_system_efficiency()*100:.2f}%;\n" \
       f"Total efficiency: {self.get_total_efficiency()*100:.2f}%;\n" \

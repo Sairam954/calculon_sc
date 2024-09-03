@@ -99,9 +99,10 @@ class Arch_leaf_specified:
 
     # FIXME change the name of the method 
     def top_level_gemm(self, m,k,n, proc_mode='roofline'):
-        print("========Cannon GEMM used============")
+        # print("========Cannon GEMM used============")
         # self.print()
         # print(f"original problem: {m},{k},{n}")
+        print('M,K,N', m,k,n)
         (T_prep, T_compute, T_send, T_store)=self.cannon_gemm_tiled(m, k, n)
         # print(f"ns for each problem: T_prep: {T_prep}, T_compute: {T_compute}, T_send: {T_send}, T_store: {T_store}")
         energy = 0  #! FIXME

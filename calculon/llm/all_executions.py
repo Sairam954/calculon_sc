@@ -71,7 +71,7 @@ class AllExecutions(calculon.CommandLine):
       'datatype', 'fused_activation', 'attention_type', 'activation_recompute',
       'pipeline_interleaving', 'optimizer_sharding', 'tensor_par_comm_type',
       'tensor_par_overlap', 'seq_par_ag_redo', 'data_par_overlap',
-      'weight_offload', 'activations_offload', 'optimizer_offload', 'training')
+      'weight_offload', 'activations_offload', 'optimizer_offload', 'training', 'gpu')
 
   @staticmethod
   def get_batch_size(data_par, max_batch_size):
